@@ -1,4 +1,4 @@
-# app.py – Super Planner v2.1 (Streamlit with Fixes)
+# app.py – Super Planner v2.2 (Scenario Compare + Cleaner Optimize Output)
 """
 This all‑in‑one Streamlit app lets you:
 1. **Tweak every major parameter** (home prices, expenses, Dad’s money, ETF return…).
@@ -7,6 +7,8 @@ This all‑in‑one Streamlit app lets you:
 4. Warn when *any* year slips negative cash‑flow.
 5. ✅ Update tables/charts when any input changes.
 6. ✅ Optionally **sell the Odessa home** and invest proceeds.
+7. ✅ **Scenario Compare** – compare outcomes with/without Dad's help.
+8. ✅ **Clear output** from the optimizer with plain-language strategy.
 """
 import streamlit as st
 import pandas as pd, numpy as np, io, hashlib, datetime as dt
@@ -72,9 +74,12 @@ def clean_csv(raw: bytes):
     return per_month
 
 @st.cache_data(show_spinner=False)
-def simulate(years=10):
+def simulate(years=10, custom_down_pct=None, custom_move=None, custom_occ=None):
     etf,cash=0,0
-    your_down = home_price*your_down_pct
+    down_pct = custom_down_pct if custom_down_pct is not None else your_down_pct
+    move = custom_move if custom_move is not None else move_year
+    occupancy = custom_occ if custom_occ is not None else occ
+    your_down = home_price*down_pct
     dad_down = dad_amount if dad_use=="Down‑Payment" else 0
     loan = home_price - (your_down+dad_down)
     m_payment = pmt(loan,interest,term)*12
@@ -85,10 +90,10 @@ def simulate(years=10):
     rows=[]
     for yr in range(1,years+1):
         inc = 175000+(50000 if yr in (2,4) else 0)
-        if yr>=move_year: inc = co_income
+        if yr>=move: inc = co_income
 
         airbnb=0
-        if yr>=move_year: airbnb += ((main_rate+guest_rate)*365*occ)*(1-0.20)
+        if yr>=move: airbnb += ((main_rate+guest_rate)*365*occupancy)*(1-0.20)
         if build_ter and yr>=2 and (flip_year is None or yr<flip_year):
             airbnb+= ter_rate*365*ter_occ*(1-0.20)
         if build_ter and flip_year and yr==flip_year:
@@ -101,7 +106,7 @@ def simulate(years=10):
             pay=min(ter_pay,ter_loan); ter_loan-=pay; tot_exp+=pay
 
         if sell_odessa and yr==6:
-            cash += home_price - (loan*0.95)  # assume 5% sell cost
+            cash += home_price - (loan*0.95)
 
         surplus = max(0,tot_inc-tot_exp)
         invest  = max(0,surplus - 0.10*tot_inc)
@@ -131,11 +136,21 @@ if st.button("Optimise 1 000 Paths 🚀"):
         rand_dp=np.random.choice([.05,.1,.2])
         rand_move=np.random.randint(2,8)
         rand_occ=np.random.uniform(.45,.8)
-        your_down_pct_rand=rand_dp
-        move_year_rand=rand_move
-        occ_rand=rand_occ
-        etf_est = simulate()['ETF'].iloc[-1]
+        df = simulate(custom_down_pct=rand_dp, custom_move=rand_move, custom_occ=rand_occ)
+        etf_est = df['ETF'].iloc[-1]
         if etf_est>best['ETF']:
-            best={'ETF':etf_est,'dp':rand_dp,'move':rand_move,'occ':rand_occ}
-    st.write("### Best Path (est)")
-    st.json(best)
+            best={'ETF':etf_est,'dp':rand_dp,'move':rand_move,'occ':rand_occ,
+                  'recommendation': f"📈 Optimal strategy: Put {int(rand_dp*100)}% down, move in Year {rand_move}, aim for {int(rand_occ*100)}% occupancy."}
+    st.write("### Optimized Strategy")
+    st.success(best['recommendation'])
+    st.write(f"**Estimated 10‑Year ETF Value:** ${best['ETF']:,.0f}")
+
+if st.button("Compare Scenarios: No Help vs With Help"):
+    old_dad_amt = dad_amount
+    dad_amount = 0
+    df1 = simulate()
+    dad_amount = old_dad_amt
+    df2 = simulate()
+    st.write("### Scenario Comparison")
+    comp = pd.DataFrame({"Year": df1["Year"], "ETF‑NoHelp": df1["ETF"], "ETF‑WithHelp": df2["ETF"]})
+    st.line_chart(comp.set_index("Year"))
